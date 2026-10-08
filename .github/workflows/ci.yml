@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run tests
+        run: |
+          python -m unittest discover tests -v
+      - name: CLI smoke — healthy fixture must pass
+        run: |
+          set +e  # GitHub Actions bash runs with -e; capture the scanner's intentional exit instead of dying
+          python thinkledger.py --data /tmp/tl-smoke quick --task t --claim c --criteria k --p 0.7; code=$?; echo "exit=$code"
+          if [ "$code" -ne 0 ]; then echo "expected exit 0"; exit 1; fi
+          python thinkledger.py --data /tmp/tl-smoke report; code=$?; echo "exit=$code"
+          if [ "$code" -ne 0 ]; then echo "expected exit 0 after registration"; exit 1; fi
+      - name: CLI smoke — naked week must exit 1 (doorbell contract)
+        run: |
+          set +e
+          python thinkledger.py --data /tmp/tl-naked report; code=$?; echo "exit=$code"
+          if [ "$code" -ne 1 ]; then echo "expected exit 1 for empty week"; exit 1; fi
+      - name: CLI smoke — tampered chain must exit 2
+        run: |
+          set +e
+          python thinkledger.py --data /tmp/tl-tamper quick --task t --claim c --criteria k --p 0.7
+          python - << 'EOF'
+          import json
+          p = "/tmp/tl-tamper/chain.jsonl"
+          with open(p, encoding="utf-8") as f:
+              rec = json.loads(f.readline())
+          rec["payload"]["claim"] = "REWRITTEN"
+          with open(p, "w", encoding="utf-8") as f:
+              f.write(json.dumps(rec, ensure_ascii=False, sort_keys=True) + "\n")
+          EOF
+          python thinkledger.py --data /tmp/tl-tamper verify; code=$?; echo "exit=$code"
+          if [ "$code" -ne 2 ]; then echo "tampering must exit 2"; exit 1; fi
+      - name: CRLF guard (index must be LF)
+        run: |
+          bad=$(git ls-files --eol | awk '$1 != "i/lf" && $1 != "i/none" {print $2, $4}')
+          if [ -n "$bad" ]; then echo "CRLF in index: $bad"; exit 1; fi
